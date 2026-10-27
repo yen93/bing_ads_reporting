@@ -1,0 +1,60 @@
+================================================================================
+AS-BUILT — Bing Ads Reporting (independent)
+Last updated: 2026-10-27
+================================================================================
+
+PURPOSE
+Pull monthly Microsoft Advertising (Bing Ads) per-campaign performance into Supabase
+for reporting/analysis. Standalone — deliberately decoupled from the MAG dashboard so
+it never affects the dashboard's ROAS "All-in" cost basis.
+
+Supabase project: aivitcomiywiysrfwqxt (MAGTestProject)
+
+SCRIPTS / EDGE FUNCTION
+- supabase/functions/bing-ads-campaign-monthly-sync/index.ts — Deno edge function.
+  Microsoft Advertising Reporting API v13 (REST): OAuth refresh-token grant →
+  SubmitGenerateReport (CampaignPerformanceReport, Aggregation=Monthly) → poll →
+  download ZIP → unzip (fflate) → parse CSV → UPSERT on (month, campaign_id) into the
+  target table. Deployed to Supabase with verify_jwt=false (v6 as of this session).
+  Requires (Supabase edge secrets): BING_ADS_CLIENT_ID, BING_ADS_CLIENT_SECRET,
+  BING_ADS_DEVELOPER_TOKEN (UNIVERSAL token), BING_ADS_REFRESH_TOKEN (seed fallback),
+  BING_ADS_ACCOUNT_ID, BING_ADS_CUSTOMER_ID. Optional: BING_ADS_TENANT (default
+  "common"), BING_ADS_START_DATE (default 2024-07-01), BING_ADS_TARGET_TABLE (default
+  bing_ads_campaign_monthly_raw). SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY auto-injected.
+
+EXTERNAL INTEGRATIONS
+- Microsoft Advertising Reporting API v13 (reporting.api.bingads.microsoft.com) — REST.
+  OAuth via Microsoft identity platform (login.microsoftonline.com). Azure app (client)
+  id 7efa40f3-bfae-45de-a3e4-16f9611f4e0b. Bing Account ID 180767648, Customer ID
+  251427668. All secrets in Supabase edge secrets; non-secret ids in credentials.example.txt.
+  AUTH IDENTITY: must OAuth as a clean @outlook.com Standard user on the account (NOT a
+  gmail-based Microsoft account → Code 126). Universal developer token required (else Code 105).
+
+DATA STORES (Supabase, project aivitcomiywiysrfwqxt)
+- public.bing_ads_campaign_monthly_raw — THIS project's destination. Per-campaign monthly
+  rows (month, account_id, campaign_id, campaign_name, channel_type, impressions, clicks,
+  cost, conversions, conversions_value, all_conversions, currency, updated_at); PK
+  (month, campaign_id). Current: 146 rows, 15 campaigns, Jun 2025–Oct 2026, ~$17,426.
+- public.oauth_token_store (provider='bing_ads') — holds the rotating single-use MSA
+  refresh token (shared table; 'xero' row belongs to the dashboard's xero-ad-spend-sync).
+- NOT written by this project: public.bing_ads_campaign_monthly (dashboard-owned; holds
+  only the Xero sentinel row campaign_id=0 that roas.js sums — do not write per-campaign
+  rows there or ROAS double-counts).
+
+AUTOMATIONS / ROUTINES
+- pg_cron bing-ads-campaign-monthly-sync-weekly — '0 22 * * 0' (Mon 06:00 Philippine
+  Time). POSTs the edge function with no auth header (hence verify_jwt=false) + 150s
+  pg_net timeout. Defined in migration 20261027000100.
+
+MIGRATIONS
+- supabase/migrations/20261027000000_bing_ads_campaign_monthly_raw.sql — the _raw table.
+- supabase/migrations/20261027000100_schedule_bing_ads_campaign_monthly_sync.sql — cron.
+
+KNOWN RISK
+- The MAG dashboard repo still contains an OLDER copy of this edge function that targets
+  public.bing_ads_campaign_monthly. The DEPLOYED function is this project's _raw version.
+  Deploy only from this folder; redeploying the dashboard copy would revert the target
+  and re-introduce the ROAS double-count.
+- Supabase MCP deploy_edge_function resets verify_jwt to true — after any MCP deploy,
+  re-PATCH it false (Management API PATCH /v1/projects/{ref}/functions/{slug}).
+================================================================================

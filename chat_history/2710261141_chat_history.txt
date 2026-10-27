@@ -1,0 +1,161 @@
+================================================================================
+CHAT HISTORY EXPORT — 2026-10-27
+Session: Unblock the independent Bing Ads reporting sync (Code 105 → 126), then
+split it into its own project (own _raw table, weekly cron) separate from the dashboard.
+================================================================================
+
+NOTE ON REDACTIONS: This session involved live/credential-like values pasted into
+or echoed in the chat. All have been replaced with [REDACTED_*] placeholders here:
+ - [REDACTED_SUPABASE_PAT] — the Supabase personal access token (sbp_…) read from
+   dashboard/supabase-access-token.txt and used for Management API calls.
+ - [REDACTED_OAUTH_CODE] — the several Microsoft OAuth authorization codes the user
+   pasted from the nativeclient redirect URL (single-use, now consumed/expired).
+ - [REDACTED_BING_REFRESH_TOKEN_FRAGMENT] — a fragment of the OLD gmail-based Bing
+   refresh token that leaked through a sed filter when previewing bing_credentials.txt.
+Non-secret identifiers (Azure app/client id, Bing account id 180767648, customer id
+251427668) are retained as they are not secrets.
+
+--------------------------------------------------------------------------------
+USER:
+(/q read-only) "re bing-ads-campaign-monthly-sync-weekly setup, can you recall where
+we got stuck last time. i recently got a new universal dev token from the super admin.
+i updated the value of BING_ADS_DEVELOPER_TOKEN in supabase edge function secrets."
+
+--------------------------------------------------------------------------------
+ASSISTANT:
+Read BING_SYNC_NEXT_STEPS.txt and the xero-ad-spend-sync memory. Recalled the blocker:
+every Microsoft Advertising call returned Code 105 InvalidCredentials because the dev
+token was the Gmail Super Admin's SINGLE-USER token while OAuth authenticated as the
+Microsoft/Outlook identity — the dev token and OAuth identity must match; a Universal
+dev token (just obtained) was the documented fix. Flagged the critical caveat that the
+Bing API path had been SUPERSEDED by the Xero sync (xero-ad-spend-sync), and that
+bing_ads_campaign_monthly is the live dashboard's ROAS table whose rows roas.js sums —
+so reviving the Bing API write there would double-count. Verified live state: the table
+held only the Xero sentinel (campaign_id=0, 17 rows, ~$16,711); oauth_token_store had a
+bing_ads row; only xero-ad-spend-sync-weekly cron existed (Bing cron still staged/unapplied).
+
+--------------------------------------------------------------------------------
+USER:
+(/q) "re bing-ads-campaign-monthly-sync-weekly setup … we setup this independently only
+for the purpose of fetching bing ads report data to supabase directly."
+
+--------------------------------------------------------------------------------
+ASSISTANT:
+Read the edge function source. Confirmed it UPSERTs per-campaign rows (campaign_id<>0)
+into bing_ads_campaign_monthly, the same table roas.js sums — so even an "independent"
+run would double-count on the dashboard. Explained role vs identity, and that the
+universal token should clear 105. Noted the function has no dry-run (always writes).
+
+--------------------------------------------------------------------------------
+USER:
+Pasted a Postman result: still {"ok":false,"error":"Submit 401 … Code 105 InvalidCredentials"}.
+Pointed to dashboard/supabase-access-token.txt and asked me to fire the endpoint again in
+case Postman was misconfigured.
+
+--------------------------------------------------------------------------------
+ASSISTANT:
+Read [REDACTED_SUPABASE_PAT]. Fired the function (no-verify-jwt, no auth header needed):
+same Code 105. Concluded it was not a Postman issue. Diagnosed the likely remaining causes
+(missing msads.manage scope on the original consent, OAuth user lacking a role, or dev-token
+whitespace) and recommended a clean re-consent. Did NOT burn the stored MSA token on a live
+GetUser check (single-use).
+
+--------------------------------------------------------------------------------
+USER:
+"generate the exact authorize URL for me"
+
+--------------------------------------------------------------------------------
+ASSISTANT:
+Previewed bing_credentials.txt safely (sed-redacted); obtained the redirect URI
+(login.microsoftonline.com/common/oauth2/nativeclient) and client id
+7efa40f3-bfae-45de-a3e4-16f9611f4e0b. (A fragment of the old refresh token
+[REDACTED_BING_REFRESH_TOKEN_FRAGMENT] leaked through the filter — redacted here.)
+Generated the authorize URL with scope msads.manage offline_access and prompt=select_account.
+
+--------------------------------------------------------------------------------
+USER:
+Pasted the nativeclient redirect with ?code=[REDACTED_OAUTH_CODE].
+
+--------------------------------------------------------------------------------
+ASSISTANT:
+Built a throwaway script that reads the client secret from bing_credentials.txt (never
+printed), exchanges the code → got a valid token (scope msads.manage). Seeded the refresh
+token into oauth_token_store via the Supabase Management API (so the token never entered my
+context — the auto-mode classifier had blocked printing it). Re-fired: new error — Code 126
+IdentityTypeMismatch ("use a different identity type"). This proved the universal dev token +
+scope now work (past 105); only the identity type remained. Gave forced /organizations/ and
+/consumers/ authorize URLs and the ads.microsoft.com check.
+
+--------------------------------------------------------------------------------
+USER:
+Pasted several more codes across turns (all [REDACTED_OAUTH_CODE]); clarified the login is
+"a microsoft personal account using a gmail address," and that the user is "just a standard
+user that can view billing and ads campaigns."
+
+--------------------------------------------------------------------------------
+ASSISTANT:
+Exchanged/seeded/fired each — all returned Code 126; every code was an MsaArtifacts (personal)
+identity. Web-searched Microsoft's docs: Code 126 reasons are GoogleAccountIsRequired /
+PersonalAccountIsRequired / WorkAccountIsRequired; the classic cause is an account created via
+Google Sign-In but authenticated with a Microsoft identity. Explained that role (standard user)
+is irrelevant to 126, that a gmail-addressed MSA can collide with a Google identity on the same
+email, and laid out two fixes: Option A (build Microsoft's Google-OAuth flow) or Option B (add a
+clean Microsoft/Azure-AD user and reuse the existing flow). Recommended B. Declined to re-run
+another identical MSA code (deterministic 126).
+
+--------------------------------------------------------------------------------
+USER:
+"but that is a new outlook email added as standard user" — pasted a fresh code.
+
+--------------------------------------------------------------------------------
+ASSISTANT:
+Corrected course (that IS Option B). Exchanged → seeded → fired: {"ok":true, upserted:146,
+distinct_months:17, Jun 2025→Oct 2026, total_cost:17426}. The clean @outlook.com standard user
+was the fix. Verified the table now held both the 146 Bing API rows and the 17 Xero sentinel
+rows — flagging the now-real ROAS double-count and asking how to resolve it (own table / drop
+sentinel / leave it), plus whether to schedule the weekly cron.
+
+--------------------------------------------------------------------------------
+USER:
+"move the sync to its own _raw table, apply weekly cron, update BING_ADS_REFRESH_TOKEN,
+create new folder for this independent project separate from dashboard here:
+C:\Users\Cloverly\claude_code\Marketing\bing_ads_reporting"
+
+--------------------------------------------------------------------------------
+ASSISTANT:
+Executed end-to-end:
+ 1. Inspected schema/PK (month,campaign_id) of bing_ads_campaign_monthly; read both existing
+    migrations; confirmed deployed function verify_jwt:false.
+ 2. Created public.bing_ads_campaign_monthly_raw (migration). Moved the 146 campaign rows into
+    it and DELETEd campaign_id<>0 from bing_ads_campaign_monthly → dashboard back to Xero-only
+    (17 rows, $16,711; double-count removed).
+ 3. Scaffolded the independent project at Marketing/bing_ads_reporting: repointed index.ts
+    (TARGET_TABLE=bing_ads_campaign_monthly_raw, override via BING_ADS_TARGET_TABLE), two
+    migrations (raw table + weekly cron), README.md, .gitignore, credentials.example.txt
+    (non-secret ids + re-consent URL).
+ 4. Deployed the function via Supabase MCP (v6). The MCP deploy flipped verify_jwt→true, so
+    PATCHed it back to false via the Management API and verified.
+ 5. Applied the weekly cron bing-ads-campaign-monthly-sync-weekly (0 22 * * 0 = Mon 06:00 PH),
+    active.
+ 6. Updated the BING_ADS_REFRESH_TOKEN secret to the working @outlook.com token by reading it
+    from oauth_token_store and POSTing to the Management API secrets endpoint — all inside a
+    script so the token never entered context (HTTP 201, len 501).
+ 7. Fired the function: {"ok":true, table:"bing_ads_campaign_monthly_raw", upserted:146,
+    total_cost:17426}. Final verification: raw=146 rows/$17,426; dashboard=17 rows/$16,711;
+    cron active.
+Cleaned up scratchpad scripts, wrote a memory note (bing-ads-reporting-project.md), and flagged
+a latent risk: the dashboard repo still holds the OLD function source pointing at the dashboard
+table — deploy only from the new folder to avoid reverting the target.
+
+--------------------------------------------------------------------------------
+USER:
+/dcp — document this session in the new folder C:\Users\Cloverly\claude_code\Marketing\bing_ads_reporting
+
+--------------------------------------------------------------------------------
+ASSISTANT:
+Saved this chat history (with redactions), created as_built.txt and CLAUDE.md for the
+bing_ads_reporting project, and confirmed .gitignore coverage. No git commands run.
+
+================================================================================
+END OF EXPORT
+================================================================================

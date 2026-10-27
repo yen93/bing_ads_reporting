@@ -1,0 +1,13 @@
+# Secrets — never commit. Real values live in Supabase edge secrets.
+*credentials*.txt
+!credentials.example.txt
+*_secret*
+*connection_string*
+*.key
+service-account*.json
+scratch_*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+node_modules/
